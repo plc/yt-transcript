@@ -9,3 +9,11 @@
   chosen source is `whisper`, or when `auto` falls through to it. This lets
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
+
+## Unreleased
+- feat: `--verbosity {silent,medium,verbose}` (default `medium`) plus `-q`/`-v`
+  shortcuts. Medium shows only our step markers; silent suppresses everything
+  except errors and the final outcome line; verbose streams yt-dlp and whisper
+  output as before. When not verbose, yt-dlp runs with `--quiet --no-warnings`
+  and whisper with `--verbose False`; on failure, the last 20 lines of their
+  captured output are printed so debugging still works.

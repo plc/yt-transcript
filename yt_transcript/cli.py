@@ -13,6 +13,13 @@ from pathlib import Path
 
 
 SOURCES = ("auto", "uploaded", "auto-captions", "whisper")
+VERBOSITIES = ("silent", "medium", "verbose")
+
+# Verbosity levels as ints for easy comparison.
+V_SILENT = 0
+V_MEDIUM = 1
+V_VERBOSE = 2
+_V_MAP = {"silent": V_SILENT, "medium": V_MEDIUM, "verbose": V_VERBOSE}
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -27,28 +34,64 @@ def require(tool: str, hint: str) -> None:
 
 def preflight(source: str) -> None:
     require("yt-dlp", "install: `brew install yt-dlp` or `pipx install yt-dlp`")
-    # whisper is only strictly required for `whisper` source; for `auto` it's
-    # a fallback and we check lazily if captions aren't found.
     if source == "whisper":
         require("whisper", "install: `pipx install openai-whisper`")
 
 
-def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, check=False, **kwargs)
+class Logger:
+    """Minimal leveled logger. Writes status messages to stderr."""
+
+    def __init__(self, level: int):
+        self.level = level
+
+    def info(self, msg: str) -> None:
+        """Shown at medium and verbose."""
+        if self.level >= V_MEDIUM:
+            print(msg, file=sys.stderr)
+
+    def debug(self, msg: str) -> None:
+        """Shown only at verbose."""
+        if self.level >= V_VERBOSE:
+            print(msg, file=sys.stderr)
+
+    def subprocess_kwargs(self) -> dict:
+        """Kwargs for subprocess.run to forward or suppress child output.
+
+        - verbose: inherit stdout/stderr (live output from yt-dlp/whisper).
+        - medium/silent: swallow stdout+stderr; we'll surface a snippet on failure.
+        """
+        if self.level >= V_VERBOSE:
+            return {}
+        return {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True}
 
 
-def try_captions(url: str, tmp: Path, lang: str, *, uploaded: bool, auto: bool) -> Path | None:
+def run(cmd: list[str], log: Logger) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=False, **log.subprocess_kwargs())
+
+
+def _tail(s: str | None, n: int = 20) -> str:
+    if not s:
+        return ""
+    lines = s.rstrip().splitlines()
+    return "\n".join(lines[-n:])
+
+
+def try_captions(
+    url: str, tmp: Path, lang: str, log: Logger, *, uploaded: bool, auto: bool
+) -> Path | None:
     """Download captions via yt-dlp. Returns path to a .vtt if found."""
     cmd = ["yt-dlp", "--skip-download", "--sub-lang", lang,
            "--sub-format", "vtt", "--convert-subs", "vtt",
            "-o", str(tmp / "%(id)s.%(ext)s")]
+    if log.level < V_VERBOSE:
+        cmd += ["--quiet", "--no-warnings"]
     if uploaded:
         cmd.append("--write-subs")
     if auto:
         cmd.append("--write-auto-subs")
     cmd.append(url)
 
-    res = run(cmd)
+    res = run(cmd, log)
     if res.returncode != 0:
         return None
     vtts = sorted(glob.glob(str(tmp / "*.vtt")))
@@ -89,21 +132,34 @@ def vtt_to_text(path: Path) -> str:
     return "\n".join(cleaned) + "\n"
 
 
-def transcribe_with_whisper(url: str, tmp: Path, model: str) -> str:
+def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str:
     require("whisper", "install: `pipx install openai-whisper`")
-    dl = run(["yt-dlp", "-f", "bestaudio", "-x", "--audio-format", "mp3",
-              "-o", str(tmp / "%(id)s.%(ext)s"), url])
+
+    log.info("[yt-dlp] downloading audio ...")
+    dl_cmd = ["yt-dlp", "-f", "bestaudio", "-x", "--audio-format", "mp3",
+              "-o", str(tmp / "%(id)s.%(ext)s"), url]
+    if log.level < V_VERBOSE:
+        dl_cmd += ["--quiet", "--no-warnings"]
+    dl = run(dl_cmd, log)
     if dl.returncode != 0:
+        if log.level < V_VERBOSE and dl.stdout:
+            print(_tail(dl.stdout), file=sys.stderr)
         die("yt-dlp failed to download audio")
     mp3s = sorted(glob.glob(str(tmp / "*.mp3")))
     if not mp3s:
         die("no audio file produced by yt-dlp")
     audio = mp3s[0]
 
-    print(f"[whisper] transcribing with model={model} ...", file=sys.stderr)
-    wh = run(["whisper", audio, "--model", model, "--output_format", "txt",
-              "--output_dir", str(tmp)])
+    log.info(f"[whisper] transcribing with model={model} ...")
+    wh_cmd = ["whisper", audio, "--model", model, "--output_format", "txt",
+              "--output_dir", str(tmp)]
+    if log.level < V_VERBOSE:
+        # Whisper prints its progressive transcript when --verbose True (default).
+        wh_cmd += ["--verbose", "False"]
+    wh = run(wh_cmd, log)
     if wh.returncode != 0:
+        if log.level < V_VERBOSE and wh.stdout:
+            print(_tail(wh.stdout), file=sys.stderr)
         die("whisper failed")
     txts = sorted(glob.glob(str(tmp / "*.txt")))
     if not txts:
@@ -123,52 +179,68 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default="small", help="whisper model (default: small)")
     p.add_argument("-o", "--output", help="write transcript to FILE instead of stdout")
     p.add_argument("--keep-temp", action="store_true", help="keep temp dir for debugging")
+
+    vg = p.add_mutually_exclusive_group()
+    vg.add_argument("--verbosity", choices=VERBOSITIES, default="medium",
+                    help="output verbosity (default: medium)")
+    vg.add_argument("-q", "--quiet", dest="verbosity", action="store_const",
+                    const="silent", help="silent: only errors and the final outcome")
+    vg.add_argument("-v", "--verbose", dest="verbosity", action="store_const",
+                    const="verbose", help="verbose: stream all yt-dlp and whisper output")
     return p
 
 
-def resolve_transcript(url: str, source: str, lang: str, model: str, tmp: Path) -> str:
+def resolve_transcript(
+    url: str, source: str, lang: str, model: str, tmp: Path, log: Logger
+) -> str:
     if source == "uploaded":
-        vtt = try_captions(url, tmp, lang, uploaded=True, auto=False)
+        log.info("[captions] fetching uploaded captions ...")
+        vtt = try_captions(url, tmp, lang, log, uploaded=True, auto=False)
         if not vtt:
             die("no uploaded captions found")
         return vtt_to_text(vtt)
 
     if source == "auto-captions":
-        vtt = try_captions(url, tmp, lang, uploaded=False, auto=True)
+        log.info("[captions] fetching auto-generated captions ...")
+        vtt = try_captions(url, tmp, lang, log, uploaded=False, auto=True)
         if not vtt:
             die("no auto-generated captions found")
         return vtt_to_text(vtt)
 
     if source == "whisper":
-        return transcribe_with_whisper(url, tmp, model)
+        return transcribe_with_whisper(url, tmp, model, log)
 
     # auto: uploaded -> auto-captions -> whisper
-    print("[auto] trying uploaded captions ...", file=sys.stderr)
-    vtt = try_captions(url, tmp, lang, uploaded=True, auto=False)
+    log.info("[auto] trying uploaded captions ...")
+    vtt = try_captions(url, tmp, lang, log, uploaded=True, auto=False)
     if vtt:
         return vtt_to_text(vtt)
     for f in glob.glob(str(tmp / "*.vtt")):
         os.remove(f)
 
-    print("[auto] trying auto-generated captions ...", file=sys.stderr)
-    vtt = try_captions(url, tmp, lang, uploaded=False, auto=True)
+    log.info("[auto] trying auto-generated captions ...")
+    vtt = try_captions(url, tmp, lang, log, uploaded=False, auto=True)
     if vtt:
         return vtt_to_text(vtt)
 
-    print("[auto] no captions; falling back to whisper ...", file=sys.stderr)
-    return transcribe_with_whisper(url, tmp, model)
+    log.info("[auto] no captions; falling back to whisper ...")
+    return transcribe_with_whisper(url, tmp, model, log)
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    log = Logger(_V_MAP[args.verbosity])
     preflight(args.source)
 
     tmp = Path(tempfile.mkdtemp(prefix="yt-transcript-"))
     try:
-        transcript = resolve_transcript(args.url, args.source, args.lang, args.model, tmp)
+        transcript = resolve_transcript(
+            args.url, args.source, args.lang, args.model, tmp, log
+        )
         if args.output:
             Path(args.output).write_text(transcript, encoding="utf-8")
-            print(f"wrote {args.output}", file=sys.stderr)
+            # Outcome line: shown at every level (including silent).
+            print(f"wrote {args.output} ({len(transcript)} chars)", file=sys.stderr)
         else:
             sys.stdout.write(transcript)
         if args.keep_temp:
