@@ -13,76 +13,29 @@ available. You can also force a specific source.
 
 ## Install
 
-Assuming dependencies (`pipx`, `yt-dlp`, `ffmpeg`, `whisper`) are already installed, the fastest path is a one-shot pipx install:
+First install the dependencies (`yt-dlp`, `ffmpeg`, `openai-whisper`):
 
 ```sh
+brew install yt-dlp ffmpeg && pipx install openai-whisper
+# or on Linux:  sudo apt-get install yt-dlp ffmpeg && pipx install openai-whisper
+```
+
+Then install yt-transcript one of two ways:
+
+```sh
+# directly from GitHub
 pipx install git+https://github.com/plc/yt-transcript.git
-```
 
-Or run the bundled installer via curl — it checks your dependencies first, tells you exactly what's missing (with the install command), and only proceeds once everything is in place:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/plc/yt-transcript/main/install.sh | bash
-```
-
-Or from a local clone:
-
-```sh
+# or clone and install
 git clone https://github.com/plc/yt-transcript.git
-cd yt-transcript
-./install.sh
+cd yt-transcript && pipx install .
 ```
 
-The installer checks for `pipx`, `yt-dlp`, `ffmpeg`, and `whisper`. If any are
-missing it prints the exact install command for your platform (brew on macOS,
-apt on Linux) and exits `3` — install what it reports and re-run. Once all deps
-are present it installs the `yt-transcript` command into an isolated pipx venv.
+Upgrade with `pipx install --force git+https://github.com/plc/yt-transcript.git`.
 
-- `./install.sh --check` — check deps only, don't install anything
-- `./install.sh --force` — reinstall `yt-transcript` even if already present
-
-The same flags work through curl:
-```sh
-curl -fsSL https://raw.githubusercontent.com/plc/yt-transcript/main/install.sh | bash -s -- --check
-```
-
-Quick one-time test without installing:
-
-```sh
-python3 yt_transcript/cli.py 'https://youtu.be/dQw4w9WgXcQ'
-```
-
-See [Requirements](#requirements) for the full dependency matrix and manual
-install commands.
-
-## Requirements
-
-All three tools must be on your `PATH`:
-
-| Tool          | Why it's needed                                                   | Install                                      |
-|---------------|-------------------------------------------------------------------|----------------------------------------------|
-| `yt-dlp`      | fetches captions and audio                                        | `brew install yt-dlp`                        |
-| `ffmpeg`      | audio extraction for yt-dlp; audio decoding for whisper           | `brew install ffmpeg`                        |
-| `whisper`     | local transcription fallback (only needed when captions miss)     | `pipx install openai-whisper`                |
-
-Python 3.9+.
-
-`ffmpeg` and `whisper` are only strictly required if you'll actually
-transcribe. The CLI checks them lazily based on `--source`:
-
-- `--source uploaded` / `auto-captions` — needs only `yt-dlp`
-- `--source auto` — needs `yt-dlp` + `ffmpeg` (whisper checked only if both caption passes fail)
-- `--source whisper` — needs all three up front
-
-## Manual install
-
-If you'd rather not use the installer script:
-
-```sh
-brew install yt-dlp ffmpeg       # or: sudo apt-get install yt-dlp ffmpeg
-pipx install openai-whisper
-pipx install .                   # from the repo root
-```
+Requires Python 3.9+. `ffmpeg` and `whisper` are only needed when actually
+transcribing audio — captions-only modes (`--source uploaded`/`auto-captions`)
+work with just `yt-dlp`.
 
 ## Usage
 
