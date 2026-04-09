@@ -20,14 +20,14 @@
 #   ./install.sh --force    # reinstall yt-transcript even if already present
 #
 # Or one-shot from the internet:
-#   curl -fsSL https://raw.githubusercontent.com/plc/yt_transcript/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/plc/yt-transcript/main/install.sh | bash
 #
 # When piped through curl, the script installs from the git URL directly (no
 # clone needed).
 
 set -euo pipefail
 
-GIT_URL="https://github.com/plc/yt_transcript.git"
+GIT_URL="https://github.com/plc/yt-transcript.git"
 
 # Detect whether we're running from a local checkout or piped through curl.
 # When piped, BASH_SOURCE is typically empty/stdin and there's no pyproject.toml
@@ -53,7 +53,7 @@ for arg in "${@:-}"; do
       if [ "$MODE" = local ] && [ -f "$0" ]; then
         awk '/^#!/ {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
       else
-        echo "yt-transcript installer — see https://github.com/plc/yt_transcript"
+        echo "yt-transcript installer — see https://github.com/plc/yt-transcript"
       fi
       exit 0
       ;;

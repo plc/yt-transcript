@@ -16,20 +16,20 @@ available. You can also force a specific source.
 Assuming dependencies (`pipx`, `yt-dlp`, `ffmpeg`, `whisper`) are already installed, the fastest path is a one-shot pipx install:
 
 ```sh
-pipx install git+https://github.com/plc/yt_transcript.git
+pipx install git+https://github.com/plc/yt-transcript.git
 ```
 
 Or run the bundled installer via curl — it checks your dependencies first, tells you exactly what's missing (with the install command), and only proceeds once everything is in place:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plc/yt_transcript/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/plc/yt-transcript/main/install.sh | bash
 ```
 
 Or from a local clone:
 
 ```sh
-git clone https://github.com/plc/yt_transcript.git
-cd yt_transcript
+git clone https://github.com/plc/yt-transcript.git
+cd yt-transcript
 ./install.sh
 ```
 
@@ -43,7 +43,7 @@ are present it installs the `yt-transcript` command into an isolated pipx venv.
 
 The same flags work through curl:
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plc/yt_transcript/main/install.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/plc/yt-transcript/main/install.sh | bash -s -- --check
 ```
 
 Quick one-time test without installing:

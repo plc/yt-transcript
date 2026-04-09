@@ -14,7 +14,7 @@
 - feat: `install.sh` detects when it's being piped through curl (no local
   `pyproject.toml` next to it) and installs from the git URL instead of a
   local path. Enables one-shot install:
-  `curl -fsSL https://raw.githubusercontent.com/plc/yt_transcript/main/install.sh | bash`
+  `curl -fsSL https://raw.githubusercontent.com/plc/yt-transcript/main/install.sh | bash`
 - docs: README shows three install paths — direct `pipx install git+...`,
   `curl | bash`, and local clone + `./install.sh`.
 
