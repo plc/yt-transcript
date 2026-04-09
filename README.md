@@ -63,7 +63,9 @@ yt-transcript URL [--source auto|uploaded|auto-captions|whisper]
 | `--source`             | `auto`    | Where to get the transcript from (see modes above)                          |
 | `--lang`               | `en`      | Caption language code (ISO 639-1)                                           |
 | `--model`              | `small`   | Whisper model: `tiny`, `base`, `small`, `medium`, `large`                   |
-| `-o`, `--output FILE`  | stdout    | Write transcript to FILE instead of stdout                                  |
+| `--format`             | `txt`     | Output format: `txt` (plain transcript) or `json` (structured, see below)   |
+| `-o`, `--output FILE`  | stdout    | Write output to FILE instead of stdout                                      |
+| `--version`            | —         | Print version and exit                                                      |
 | `--keep-temp`          | off       | Don't delete the working directory (for debugging)                          |
 | `-q`, `--quiet`        | —         | Silent: only errors and the final outcome line                              |
 | `-v`, `--verbose`      | —         | Verbose: stream all yt-dlp / whisper output                                 |
@@ -72,6 +74,9 @@ yt-transcript URL [--source auto|uploaded|auto-captions|whisper]
 ### Examples
 
 ```sh
+# Print version.
+yt-transcript --version
+
 # Simplest: print transcript to stdout.
 yt-transcript 'https://youtu.be/dQw4w9WgXcQ'
 
@@ -86,7 +91,35 @@ yt-transcript --source whisper --model medium 'https://youtu.be/...'
 
 # See every yt-dlp and whisper line for debugging.
 yt-transcript -v 'https://youtu.be/...'
+
+# Structured output for scripts and agents.
+yt-transcript --format json -q 'https://youtu.be/...'
 ```
+
+### JSON output (for agents and scripts)
+
+`--format json` emits a single JSON object on stdout. Combine with `-q` to
+keep stderr clean. Shape:
+
+```json
+{
+  "transcript": "...",
+  "source": "uploaded",           // uploaded | auto-captions | whisper
+  "language": "en",               // for caption sources; null for whisper
+  "model": null,                  // whisper model if source == whisper; else null
+  "video_id": "dQw4w9WgXcQ",
+  "title": "...",
+  "duration": 213,                // seconds
+  "uploader": "...",
+  "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "chars": 4823
+}
+```
+
+Metadata fields come from yt-dlp's `--write-info-json` sidecar; any field that
+yt-dlp didn't populate will be `null`. `source` is always the one that actually
+produced the transcript — so in `--source auto` an agent can see whether it got
+uploaded captions, auto-captions, or fell back to whisper.
 
 ### Verbosity levels
 

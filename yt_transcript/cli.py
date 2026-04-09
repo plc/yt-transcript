@@ -3,17 +3,22 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import __version__
 
 
 SOURCES = ("auto", "uploaded", "auto-captions", "whisper")
 VERBOSITIES = ("silent", "medium", "verbose")
+FORMATS = ("txt", "json")
 
 # Verbosity levels as ints for easy comparison.
 V_SILENT = 0
@@ -118,12 +123,52 @@ def _tail(s: str | None, n: int = 20) -> str:
     return "\n".join(lines[-n:])
 
 
+@dataclass
+class Result:
+    """Everything an agent might want to know about a run."""
+    transcript: str
+    source: str                # which source actually produced the transcript
+    language: str | None = None  # caption language (captions sources) or detected (whisper)
+    model: str | None = None   # whisper model, if used
+    video_id: str | None = None
+    title: str | None = None
+    duration: float | None = None
+    uploader: str | None = None
+    webpage_url: str | None = None
+
+
+def _read_info_json(tmp: Path) -> dict:
+    """Return the first *.info.json yt-dlp wrote, or {}."""
+    files = sorted(glob.glob(str(tmp / "*.info.json")))
+    if not files:
+        return {}
+    try:
+        return json.loads(Path(files[0]).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _meta_from_info(info: dict) -> dict:
+    """Extract just the fields we expose."""
+    return {
+        "video_id": info.get("id"),
+        "title": info.get("title"),
+        "duration": info.get("duration"),
+        "uploader": info.get("uploader") or info.get("channel"),
+        "webpage_url": info.get("webpage_url"),
+    }
+
+
 def try_captions(
     url: str, tmp: Path, lang: str, log: Logger, *, uploaded: bool, auto: bool
 ) -> Path | None:
-    """Download captions via yt-dlp. Returns path to a .vtt if found."""
+    """Download captions via yt-dlp. Returns path to a .vtt if found.
+
+    Also writes a sidecar *.info.json which callers can read for metadata.
+    """
     cmd = ["yt-dlp", "--skip-download", "--sub-lang", lang,
            "--sub-format", "vtt", "--convert-subs", "vtt",
+           "--write-info-json",
            "-o", str(tmp / "%(id)s.%(ext)s")]
     if log.level < V_VERBOSE:
         cmd += ["--quiet", "--no-warnings"]
@@ -174,11 +219,13 @@ def vtt_to_text(path: Path) -> str:
     return "\n".join(cleaned) + "\n"
 
 
-def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str:
+def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str:  # noqa: E501
+    # Returns transcript text only. Metadata is read from *.info.json by caller.
     require("whisper", "install: `pipx install openai-whisper`")
 
     log.info("[yt-dlp] downloading audio ...")
     dl_cmd = ["yt-dlp", "-f", "bestaudio", "-x", "--audio-format", "mp3",
+              "--write-info-json",
               "-o", str(tmp / "%(id)s.%(ext)s"), url]
     if log.level < V_VERBOSE:
         dl_cmd += ["--quiet", "--no-warnings"]
@@ -219,12 +266,16 @@ def build_parser() -> argparse.ArgumentParser:
         prog="yt-transcript",
         description="Turn a YouTube video into a clean text transcript.",
     )
+    p.add_argument("--version", action="version", version=f"yt-transcript {__version__}")
     p.add_argument("url", help="YouTube video URL")
     p.add_argument("--source", choices=SOURCES, default="auto",
                    help="transcript source (default: auto — uploaded → auto-captions → whisper)")
     p.add_argument("--lang", default="en", help="caption language code (default: en)")
     p.add_argument("--model", default="small", help="whisper model (default: small)")
-    p.add_argument("-o", "--output", help="write transcript to FILE instead of stdout")
+    p.add_argument("--format", choices=FORMATS, default="txt", dest="format",
+                   help="output format (default: txt). json emits a structured object "
+                        "with video metadata, the source actually used, and the transcript.")
+    p.add_argument("-o", "--output", help="write output to FILE instead of stdout")
     p.add_argument("--keep-temp", action="store_true", help="keep temp dir for debugging")
 
     vg = p.add_mutually_exclusive_group()
@@ -239,7 +290,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def resolve_transcript(
     url: str, source: str, lang: str, model: str, tmp: Path, log: Logger
-) -> str:
+) -> Result:
+    """Run the pipeline and return a populated Result."""
+
+    def _result(text: str, actual_source: str, *, used_lang: str | None = None,
+                used_model: str | None = None) -> Result:
+        meta = _meta_from_info(_read_info_json(tmp))
+        return Result(
+            transcript=text,
+            source=actual_source,
+            language=used_lang,
+            model=used_model,
+            **meta,
+        )
+
     if source == "uploaded":
         log.info("[captions] fetching uploaded captions ...")
         vtt = try_captions(url, tmp, lang, log, uploaded=True, auto=False)
@@ -247,7 +311,7 @@ def resolve_transcript(
             die(f"no uploaded captions found for lang={lang!r}. "
                 "Try --source auto-captions, --source whisper, or a different --lang.",
                 code=EXIT_NO_CAPTIONS)
-        return vtt_to_text(vtt)
+        return _result(vtt_to_text(vtt), "uploaded", used_lang=lang)
 
     if source == "auto-captions":
         log.info("[captions] fetching auto-generated captions ...")
@@ -256,26 +320,28 @@ def resolve_transcript(
             die(f"no auto-generated captions found for lang={lang!r}. "
                 "Try --source whisper or a different --lang.",
                 code=EXIT_NO_CAPTIONS)
-        return vtt_to_text(vtt)
+        return _result(vtt_to_text(vtt), "auto-captions", used_lang=lang)
 
     if source == "whisper":
-        return transcribe_with_whisper(url, tmp, model, log)
+        text = transcribe_with_whisper(url, tmp, model, log)
+        return _result(text, "whisper", used_model=model)
 
     # auto: uploaded -> auto-captions -> whisper
     log.info("[auto] trying uploaded captions ...")
     vtt = try_captions(url, tmp, lang, log, uploaded=True, auto=False)
     if vtt:
-        return vtt_to_text(vtt)
+        return _result(vtt_to_text(vtt), "uploaded", used_lang=lang)
     for f in glob.glob(str(tmp / "*.vtt")):
         os.remove(f)
 
     log.info("[auto] trying auto-generated captions ...")
     vtt = try_captions(url, tmp, lang, log, uploaded=False, auto=True)
     if vtt:
-        return vtt_to_text(vtt)
+        return _result(vtt_to_text(vtt), "auto-captions", used_lang=lang)
 
     log.info("[auto] no captions; falling back to whisper ...")
-    return transcribe_with_whisper(url, tmp, model, log)
+    text = transcribe_with_whisper(url, tmp, model, log)
+    return _result(text, "whisper", used_model=model)
 
 
 def main() -> None:
@@ -286,18 +352,39 @@ def main() -> None:
 
     tmp = Path(tempfile.mkdtemp(prefix="yt-transcript-"))
     try:
-        transcript = resolve_transcript(
+        result = resolve_transcript(
             args.url, args.source, args.lang, args.model, tmp, log
         )
+
+        if args.format == "json":
+            payload = {
+                "transcript": result.transcript,
+                "source": result.source,
+                "language": result.language,
+                "model": result.model,
+                "video_id": result.video_id,
+                "title": result.title,
+                "duration": result.duration,
+                "uploader": result.uploader,
+                "webpage_url": result.webpage_url,
+                "chars": len(result.transcript),
+            }
+            body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        else:
+            body = result.transcript
+
         if args.output:
             try:
-                Path(args.output).write_text(transcript, encoding="utf-8")
+                Path(args.output).write_text(body, encoding="utf-8")
             except OSError as e:
                 die(f"could not write output file {args.output!r}: {e}", code=EXIT_IO)
             # Outcome line: shown at every level (including silent).
-            print(f"wrote {args.output} ({len(transcript)} chars)", file=sys.stderr)
+            print(
+                f"wrote {args.output} ({len(result.transcript)} chars, source={result.source})",
+                file=sys.stderr,
+            )
         else:
-            sys.stdout.write(transcript)
+            sys.stdout.write(body)
         if args.keep_temp:
             print(f"[keep-temp] {tmp}", file=sys.stderr)
     except KeyboardInterrupt:

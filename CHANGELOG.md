@@ -10,6 +10,18 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.4.0 — 2026-04-09
+- feat: `--version` flag.
+- feat: `--format {txt,json}` (default `txt`). JSON mode emits a single object
+  containing the transcript plus structured metadata: `source` (which one
+  actually produced the transcript — useful for `--source auto`), `language`,
+  `model`, `video_id`, `title`, `duration`, `uploader`, `webpage_url`, and
+  `chars`. Metadata is extracted from yt-dlp's own `--write-info-json` sidecar,
+  so it's free — no extra network calls.
+- internal: `resolve_transcript()` now returns a `Result` dataclass instead of a
+  bare string, centralizing the metadata plumbing.
+- docs: README documents the JSON schema and adds a version example.
+
 ## 0.3.0 — 2026-04-09
 - feat: up-front URL validation. Rejects empty input, non-YouTube domains, and
   backslash-mangled URLs (common zsh `url-quote-magic` mishap) with specific
