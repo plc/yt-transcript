@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yt-transcript"
-version = "0.5.2"
+version = "0.6.0"
 description = "Turn a YouTube video into a clean text transcript via captions or Whisper."
 requires-python = ">=3.9"
 authors = [{ name = "plc" }]

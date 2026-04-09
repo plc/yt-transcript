@@ -135,6 +135,66 @@ class Result:
     duration: float | None = None
     uploader: str | None = None
     webpage_url: str | None = None
+    # Populated only for the whisper path. Lets agents gauge runtime up front.
+    audio_duration_seconds: float | None = None
+    whisper_estimate_seconds: dict | None = None  # {"min": int, "max": int}
+
+
+# Rough CPU-speed multipliers for each whisper model, as multiples of realtime
+# (range is min..max). Used purely for pre-run estimates logged to stderr and
+# reported in JSON output — NOT a hard limit.
+_WHISPER_SPEED = {
+    "tiny":   (5.0, 10.0),
+    "base":   (3.0, 5.0),
+    "small":  (1.0, 2.0),
+    "medium": (0.4, 0.8),
+    "large":  (0.15, 0.3),
+    "large-v2": (0.15, 0.3),
+    "large-v3": (0.15, 0.3),
+}
+
+
+def _estimate_whisper_seconds(duration_s: float, model: str) -> dict | None:
+    """Return {"min": int, "max": int} for how long whisper will likely take."""
+    lo_hi = _WHISPER_SPEED.get(model)
+    if not lo_hi:
+        return None
+    lo_speed, hi_speed = lo_hi
+    # faster speed = shorter runtime
+    return {
+        "min": int(round(duration_s / hi_speed)),
+        "max": int(round(duration_s / lo_speed)),
+    }
+
+
+def _fmt_hms(seconds: float) -> str:
+    s = int(round(seconds))
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m{s:02d}s"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def probe_duration(url: str, log: Logger) -> float | None:
+    """Ask yt-dlp for the video duration without downloading. Fast."""
+    cmd = ["yt-dlp", "--skip-download", "--quiet", "--no-warnings",
+           "--print", "%(duration)s", url]
+    try:
+        res = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    except OSError:
+        return None
+    if res.returncode != 0:
+        return None
+    out = (res.stdout or "").strip().splitlines()
+    if not out:
+        return None
+    try:
+        return float(out[-1])
+    except ValueError:
+        return None
 
 
 def _read_info_json(tmp: Path) -> dict:
@@ -219,10 +279,60 @@ def vtt_to_text(path: Path) -> str:
     return "\n".join(cleaned) + "\n"
 
 
-def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str:  # noqa: E501
-    # Returns transcript text only. Metadata is read from *.info.json by caller.
+def transcribe_with_whisper(
+    url: str, tmp: Path, model: str, log: Logger
+) -> tuple[str, float | None, dict | None]:
+    """Run the whisper path. Returns (transcript_text, duration_s, estimate_dict).
+
+    Before downloading audio, this function probes the video's duration and
+    prints a prominent estimate line to stderr so users (and agents scraping
+    stderr) know roughly how long the run will take. The estimate is also
+    returned to the caller for inclusion in the JSON output.
+    """
     require("whisper", "install: `pipx install openai-whisper`")
 
+    # --- Duration probe + estimate (shown BEFORE the slow work starts) -------
+    # Reuse metadata from a prior yt-dlp call (e.g. captions attempts in auto
+    # mode) if available — saves a roundtrip. Otherwise probe explicitly.
+    duration_s: float | None = None
+    info = _read_info_json(tmp)
+    if info.get("duration") is not None:
+        try:
+            duration_s = float(info["duration"])
+        except (TypeError, ValueError):
+            duration_s = None
+    if duration_s is None:
+        duration_s = probe_duration(url, log)
+
+    estimate = _estimate_whisper_seconds(duration_s, model) if duration_s else None
+
+    # Always surface this, even in --quiet mode. It's the single most important
+    # piece of information for long videos, and agents parsing stderr need it.
+    # Machine-friendly key=value form:
+    if duration_s is not None:
+        if estimate is not None:
+            print(
+                f"[whisper-estimate] audio={_fmt_hms(duration_s)} "
+                f"duration_seconds={int(round(duration_s))} "
+                f"model={model} "
+                f"est_min_seconds={estimate['min']} est_max_seconds={estimate['max']} "
+                f"est_range={_fmt_hms(estimate['min'])}-{_fmt_hms(estimate['max'])}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[whisper-estimate] audio={_fmt_hms(duration_s)} "
+                f"duration_seconds={int(round(duration_s))} "
+                f"model={model} est=unknown",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            f"[whisper-estimate] duration=unknown model={model}",
+            file=sys.stderr,
+        )
+
+    # --- Audio download ------------------------------------------------------
     log.info("[yt-dlp] downloading audio ...")
     dl_cmd = ["yt-dlp", "-f", "bestaudio", "-x", "--audio-format", "mp3",
               "--write-info-json",
@@ -242,15 +352,24 @@ def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str
         die("yt-dlp ran but produced no audio file", code=EXIT_DOWNLOAD)
     audio = mp3s[0]
 
-    log.info(f"[whisper] transcribing with model={model} ... (this may take a while)")
+    # --- Whisper -------------------------------------------------------------
+    # At medium+ verbosity we let whisper stream its per-segment output
+    # ([HH:MM:SS.sss --> HH:MM:SS.sss] text) directly to stderr so the user
+    # sees continuous progress. At silent verbosity we suppress it and only
+    # surface the tail on failure.
+    log.info(f"[whisper] transcribing with model={model} ...")
     wh_cmd = ["whisper", audio, "--model", model, "--output_format", "txt",
               "--output_dir", str(tmp)]
-    if log.level < V_VERBOSE:
-        # Whisper prints its progressive transcript when --verbose True (default).
+    if log.level <= V_SILENT:
         wh_cmd += ["--verbose", "False"]
-    wh = run(wh_cmd, log)
+        wh_kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True}
+    else:
+        # medium or verbose: inherit stdout/stderr so whisper streams live.
+        wh_kwargs = {}
+
+    wh = subprocess.run(wh_cmd, check=False, **wh_kwargs)
     if wh.returncode != 0:
-        if log.level < V_VERBOSE and wh.stdout:
+        if wh_kwargs and getattr(wh, "stdout", None):
             print(_tail(wh.stdout), file=sys.stderr)
         die(f"whisper failed to transcribe (model={model}). "
             "If this is a model-name error, try one of: tiny, base, small, medium, large.",
@@ -258,7 +377,8 @@ def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str
     txts = sorted(glob.glob(str(tmp / "*.txt")))
     if not txts:
         die("whisper ran but produced no .txt output", code=EXIT_WHISPER)
-    return Path(txts[0]).read_text(encoding="utf-8", errors="replace")
+    text = Path(txts[0]).read_text(encoding="utf-8", errors="replace")
+    return text, duration_s, estimate
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -294,13 +414,17 @@ def resolve_transcript(
     """Run the pipeline and return a populated Result."""
 
     def _result(text: str, actual_source: str, *, used_lang: str | None = None,
-                used_model: str | None = None) -> Result:
+                used_model: str | None = None,
+                audio_duration_seconds: float | None = None,
+                whisper_estimate_seconds: dict | None = None) -> Result:
         meta = _meta_from_info(_read_info_json(tmp))
         return Result(
             transcript=text,
             source=actual_source,
             language=used_lang,
             model=used_model,
+            audio_duration_seconds=audio_duration_seconds,
+            whisper_estimate_seconds=whisper_estimate_seconds,
             **meta,
         )
 
@@ -323,8 +447,9 @@ def resolve_transcript(
         return _result(vtt_to_text(vtt), "auto-captions", used_lang=lang)
 
     if source == "whisper":
-        text = transcribe_with_whisper(url, tmp, model, log)
-        return _result(text, "whisper", used_model=model)
+        text, dur, est = transcribe_with_whisper(url, tmp, model, log)
+        return _result(text, "whisper", used_model=model,
+                       audio_duration_seconds=dur, whisper_estimate_seconds=est)
 
     # auto: uploaded -> auto-captions -> whisper
     log.info("[auto] trying uploaded captions ...")
@@ -340,8 +465,9 @@ def resolve_transcript(
         return _result(vtt_to_text(vtt), "auto-captions", used_lang=lang)
 
     log.info("[auto] no captions; falling back to whisper ...")
-    text = transcribe_with_whisper(url, tmp, model, log)
-    return _result(text, "whisper", used_model=model)
+    text, dur, est = transcribe_with_whisper(url, tmp, model, log)
+    return _result(text, "whisper", used_model=model,
+                   audio_duration_seconds=dur, whisper_estimate_seconds=est)
 
 
 def main() -> None:
@@ -368,6 +494,9 @@ def main() -> None:
                 "uploader": result.uploader,
                 "webpage_url": result.webpage_url,
                 "chars": len(result.transcript),
+                # Whisper-only fields (null for caption sources).
+                "audio_duration_seconds": result.audio_duration_seconds,
+                "whisper_estimate_seconds": result.whisper_estimate_seconds,
             }
             body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         else:

@@ -150,7 +150,20 @@ keep stderr clean. Shape:
   "duration": 213,                // seconds
   "uploader": "...",
   "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "chars": 4823
+  "chars": 4823,
+  "audio_duration_seconds": null,       // set only when source == whisper
+  "whisper_estimate_seconds": null      // set only when source == whisper
+}
+```
+
+When the whisper path is used, the last two fields are populated:
+
+```json
+{
+  "source": "whisper",
+  "model": "small",
+  "audio_duration_seconds": 2843.0,
+  "whisper_estimate_seconds": { "min": 1421, "max": 2843 }
 }
 ```
 
@@ -158,6 +171,24 @@ Metadata fields come from yt-dlp's `--write-info-json` sidecar; any field that
 yt-dlp didn't populate will be `null`. `source` is always the one that actually
 produced the transcript — so in `--source auto` an agent can see whether it got
 uploaded captions, auto-captions, or fell back to whisper.
+
+### Long videos and the whisper estimate
+
+Before whisper runs, yt-transcript probes the video duration (a fast metadata-only
+yt-dlp call) and prints a machine-parseable estimate line to stderr — always,
+at every verbosity level including `-q`. This is the single most important
+signal for agents running whisper: it tells you up front whether you're waiting
+minutes or hours.
+
+```
+[whisper-estimate] audio=47m23s duration_seconds=2843 model=small est_min_seconds=1421 est_max_seconds=2843 est_range=23m41s-47m23s
+```
+
+The format is `key=value` pairs separated by spaces so you can `grep` and parse
+it without a regex library. The same numbers appear in `--format json` as
+`audio_duration_seconds` and `whisper_estimate_seconds.{min,max}`.
+
+See the [Long videos](#long-videos) section below for model speed guidance.
 
 ### Verbosity levels
 
@@ -172,6 +203,46 @@ uploaded captions, auto-captions, or fell back to whisper.
   wrote out.txt (4823 chars)
   ```
 - **`verbose`** (`-v`) — streams yt-dlp's progress and whisper's live transcript to your terminal.
+
+## Long videos
+
+If your video has captions, length doesn't matter — the captions path
+downloads a single small VTT file and cleans it in microseconds regardless of
+how long the video is. A 4-hour podcast is no different from a 4-minute clip.
+
+The whisper path is where length matters. On a modern Mac CPU, openai-whisper
+processes audio at very different speeds depending on the model:
+
+| model    | speed (CPU)       | 1h audio   | notes                                    |
+|----------|-------------------|------------|------------------------------------------|
+| `tiny`   | ~5–10× realtime   | ~6–12 min  | fast draft quality                       |
+| `base`   | ~3–5× realtime    | ~12–20 min | slightly better than tiny                |
+| `small`  | ~1–2× realtime    | ~30–60 min | **default** — decent quality             |
+| `medium` | ~0.4–0.8× realtime| ~2 h       | notably better, notably slower           |
+| `large`  | ~0.15–0.3× realtime| ~4–7 h    | best accuracy, very slow on CPU          |
+
+**Recommendations for long videos:**
+
+1. **Always try captions first.** The default `--source auto` does this — it
+   only falls back to whisper when both caption passes fail. Running
+   `--source auto` on an hour-long interview that has human captions costs you
+   roughly a single yt-dlp roundtrip, not an hour of CPU.
+2. **If you must use whisper, pick the right model for the job.** For
+   searchable text / rough understanding, `--model tiny` or `--model base`
+   usually suffices and is 5–10× faster than the default. Reserve `small`,
+   `medium`, and `large` for cases where you genuinely need the accuracy.
+3. **Watch the estimate line.** Before whisper starts, yt-transcript prints a
+   `[whisper-estimate]` line to stderr (see [JSON output](#json-output-for-agents-and-scripts)
+   above) telling you the audio length and expected runtime range. If it says
+   `est_range=4h-7h` and you didn't expect that, hit Ctrl-C and rerun with
+   `--model tiny`.
+4. **At `medium` verbosity (the default) whisper streams per-segment output.**
+   You'll see lines like `[00:05:30.000 --> 00:05:34.200]  ... text ...` tick
+   by as it works, so you can tell it's making progress on long runs.
+   `-q` suppresses this; `-v` is identical to medium for whisper.
+
+There's no hard length limit — whisper chunks audio internally into
+30-second windows, so multi-hour videos work fine as long as you're patient.
 
 ## How it works
 

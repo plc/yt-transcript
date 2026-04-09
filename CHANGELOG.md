@@ -10,6 +10,29 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.6.0 — 2026-04-09
+- feat: whisper runtime estimate. Before whisper starts, probe the video's
+  duration via `yt-dlp --print` (reusing an existing info.json if one is
+  already on disk from a prior captions attempt), and print a prominent
+  machine-parseable line to stderr **at every verbosity level, including `-q`**:
+  ```
+  [whisper-estimate] audio=47m23s duration_seconds=2843 model=small \
+    est_min_seconds=1421 est_max_seconds=2843 est_range=23m41s-47m23s
+  ```
+  The key=value format is grep/parse-friendly for agents. Runtime ranges use
+  per-model CPU speed multipliers (tiny 5–10x realtime, small 1–2x, large
+  0.15–0.3x, etc.).
+- feat: `--format json` gains `audio_duration_seconds` and
+  `whisper_estimate_seconds: {min, max}` fields (populated only when the
+  whisper path runs; `null` for caption sources).
+- feat: medium verbosity now streams whisper's per-segment output live instead
+  of suppressing it. Eliminates the "is it stuck?" problem on hour-long runs.
+  yt-dlp is still suppressed at medium. Silent (`-q`) still hides everything
+  except errors and the outcome line. Verbose (`-v`) unchanged.
+- docs: new "Long videos" section in README with a per-model CPU speed table
+  and recommendations (prefer captions, pick the right model, watch the
+  estimate line). JSON section documents the new fields.
+
 ## 0.5.2 — 2026-04-09
 - feat: `install.sh` detects when it's being piped through curl (no local
   `pyproject.toml` next to it) and installs from the git URL instead of a
