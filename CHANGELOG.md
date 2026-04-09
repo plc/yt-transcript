@@ -10,6 +10,19 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.8.0 — 2026-04-09
+- breaking: `--verbosity` flag removed. Verbosity is now controlled only by
+  `-q` / `-v` (mutually exclusive, default is medium). Three spellings for
+  three states was redundant; the short flags are the common convention.
+- breaking: `--sample-seconds N` removed. The sample clip length is now
+  passed directly to `--sample` as an optional argument:
+  - `--sample` → default 60 seconds
+  - `--sample 90` → 90 seconds
+  - `--sample https://youtu.be/...` → URL + default seconds (token that isn't
+    an integer is treated as the URL; convenience for the common case)
+  - `--sample 90 https://youtu.be/...` → URL + 90 seconds
+- docs: README flags table, examples, and verbosity section updated.
+
 ## 0.7.0 — 2026-04-09
 - feat: `--sample` and `--sample-seconds N` (default 60) — smoke-test mode that
   processes only the first N seconds of the video end-to-end. Works with

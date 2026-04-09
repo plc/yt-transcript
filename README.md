@@ -104,12 +104,13 @@ yt-transcript URL [--source auto|uploaded|auto-captions|whisper]
 | `--format`             | `txt`     | Output format: `txt` (plain transcript) or `json` (structured, see below)   |
 | `-o`, `--output FILE`  | stdout    | Write output to FILE instead of stdout                                      |
 | `--version`            | —         | Print version and exit                                                      |
-| `--sample`             | off       | Sample mode: only process the first N seconds. Smoke-tests the full pipeline end to end. If no URL is given, a built-in default is used. |
-| `--sample-seconds N`   | `60`      | Length of the sample clip in seconds. Implies `--sample`.                   |
+| `--sample [SECONDS]`   | off       | Sample mode: only process the first SECONDS of the video (default 60 when no number given). Smoke-tests the full pipeline end to end. If no URL is given, a built-in default is used. |
 | `--keep-temp`          | off       | Don't delete the working directory (for debugging)                          |
 | `-q`, `--quiet`        | —         | Silent: only errors and the final outcome line                              |
 | `-v`, `--verbose`      | —         | Verbose: stream all yt-dlp / whisper output                                 |
-| `--verbosity LEVEL`    | `medium`  | `silent` \| `medium` \| `verbose`                                            |
+
+Default verbosity (no flag) is "medium": our own step markers plus whisper's
+live per-segment progress. `-q` and `-v` are mutually exclusive.
 
 ### Examples
 
@@ -117,8 +118,11 @@ yt-transcript URL [--source auto|uploaded|auto-captions|whisper]
 # Smoke-test the whole pipeline (first 60s only, built-in sample URL).
 yt-transcript --sample
 
-# Same, but your own URL and a longer clip.
-yt-transcript --sample --sample-seconds 90 'https://youtu.be/...'
+# Same, but your own URL.
+yt-transcript --sample 'https://youtu.be/...'
+
+# Longer clip.
+yt-transcript --sample 120 'https://youtu.be/...'
 
 # Print version.
 yt-transcript --version
@@ -226,8 +230,8 @@ See the [Long videos](#long-videos) section below for model speed guidance.
 
 ### Verbosity levels
 
-- **`silent`** (`-q`) — only errors and a single `wrote FILE (N chars)` outcome line. yt-dlp runs with `--quiet --no-warnings` and whisper with `--verbose False`. On any failure, the last 20 lines of their captured output are still printed so you can diagnose.
-- **`medium`** (default) — step markers only, e.g.:
+- **silent** (`-q`) — only errors and a single `wrote FILE (N chars)` outcome line. yt-dlp runs with `--quiet --no-warnings` and whisper with `--verbose False`. On any failure, the last 20 lines of their captured output are still printed so you can diagnose.
+- **medium** (default, no flag) — step markers plus whisper's live per-segment output, e.g.:
   ```
   [auto] trying uploaded captions ...
   [auto] trying auto-generated captions ...
@@ -236,7 +240,7 @@ See the [Long videos](#long-videos) section below for model speed guidance.
   [whisper] transcribing with model=small ... (this may take a while)
   wrote out.txt (4823 chars)
   ```
-- **`verbose`** (`-v`) — streams yt-dlp's progress and whisper's live transcript to your terminal.
+- **verbose** (`-v`) — streams yt-dlp's progress in addition to whisper's.
 
 ## Long videos
 

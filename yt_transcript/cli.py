@@ -17,7 +17,6 @@ from . import __version__
 
 
 SOURCES = ("auto", "uploaded", "auto-captions", "whisper")
-VERBOSITIES = ("silent", "medium", "verbose")
 FORMATS = ("txt", "json")
 
 # Default video used when --sample is passed without a URL. A short, always-
@@ -25,11 +24,10 @@ FORMATS = ("txt", "json")
 DEFAULT_SAMPLE_URL = "https://www.youtube.com/watch?v=3m5qxZm_JqM"
 DEFAULT_SAMPLE_SECONDS = 60
 
-# Verbosity levels as ints for easy comparison.
+# Verbosity levels as ints for easy comparison. Default is MEDIUM.
 V_SILENT = 0
 V_MEDIUM = 1
 V_VERBOSE = 2
-_V_MAP = {"silent": V_SILENT, "medium": V_MEDIUM, "verbose": V_VERBOSE}
 
 # Exit codes
 EXIT_OK = 0
@@ -429,14 +427,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("url", nargs="?", default=None,
                    help="YouTube video URL. Optional when --sample is used "
                         f"(defaults to {DEFAULT_SAMPLE_URL} in that case).")
-    p.add_argument("--sample", action="store_true",
-                   help=f"sample mode: only process the first N seconds "
-                        f"(default {DEFAULT_SAMPLE_SECONDS}, see --sample-seconds). "
+    # --sample takes an OPTIONAL int: `--sample` alone = default 60s,
+    # `--sample 90` = 90s. If the argument isn't an int we fall back to
+    # treating it as the URL (so `--sample https://...` also works).
+    p.add_argument("--sample", nargs="?", const="__default__", default=None,
+                   metavar="SECONDS",
+                   help=f"sample mode: only process the first SECONDS of the video "
+                        f"(default {DEFAULT_SAMPLE_SECONDS} when no number given). "
                         "Useful for smoke-testing the CLI end to end. "
                         "If no URL is given, a built-in sample URL is used.")
-    p.add_argument("--sample-seconds", type=int, default=None, metavar="N",
-                   help=f"length of the sample in seconds (default: {DEFAULT_SAMPLE_SECONDS}). "
-                        "Implies --sample.")
     p.add_argument("--source", choices=SOURCES, default="auto",
                    help="transcript source (default: auto — uploaded → auto-captions → whisper)")
     p.add_argument("--lang", default="en", help="caption language code (default: en)")
@@ -448,12 +447,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep-temp", action="store_true", help="keep temp dir for debugging")
 
     vg = p.add_mutually_exclusive_group()
-    vg.add_argument("--verbosity", choices=VERBOSITIES, default="medium",
-                    help="output verbosity (default: medium)")
-    vg.add_argument("-q", "--quiet", dest="verbosity", action="store_const",
-                    const="silent", help="silent: only errors and the final outcome")
-    vg.add_argument("-v", "--verbose", dest="verbosity", action="store_const",
-                    const="verbose", help="verbose: stream all yt-dlp and whisper output")
+    vg.add_argument("-q", "--quiet", dest="verbosity_level", action="store_const",
+                    const=V_SILENT,
+                    help="silent: only errors and the final outcome line")
+    vg.add_argument("-v", "--verbose", dest="verbosity_level", action="store_const",
+                    const=V_VERBOSE,
+                    help="verbose: stream all yt-dlp and whisper output")
+    p.set_defaults(verbosity_level=V_MEDIUM)
     return p
 
 
@@ -533,22 +533,38 @@ def resolve_transcript(
 
 def main() -> None:
     args = build_parser().parse_args()
-    log = Logger(_V_MAP[args.verbosity])
+    log = Logger(args.verbosity_level)
 
     # --- sample mode resolution ---------------------------------------------
-    # --sample-seconds implies --sample.
-    if args.sample_seconds is not None:
-        args.sample = True
+    # args.sample is one of:
+    #   None           → sample mode off
+    #   "__default__"  → `--sample` bare; use DEFAULT_SAMPLE_SECONDS
+    #   "<int>"        → `--sample 90`; parse as seconds
+    #   "<url-ish>"    → `--sample https://...`; treat the token as the URL
+    #                    and use default seconds
     sample_seconds: int | None = None
-    if args.sample:
-        sample_seconds = args.sample_seconds if args.sample_seconds is not None \
-            else DEFAULT_SAMPLE_SECONDS
-        if sample_seconds <= 0:
-            die("--sample-seconds must be a positive integer", code=EXIT_USAGE)
+    if args.sample is not None:
+        val = args.sample
+        if val == "__default__":
+            sample_seconds = DEFAULT_SAMPLE_SECONDS
+        else:
+            try:
+                sample_seconds = int(val)
+            except ValueError:
+                # Non-int value after --sample. Rescue the common case of
+                # `--sample <URL>` by treating the token as the URL.
+                if args.url is None:
+                    args.url = val
+                    sample_seconds = DEFAULT_SAMPLE_SECONDS
+                else:
+                    die(f"--sample expects an integer number of seconds, got {val!r}",
+                        code=EXIT_USAGE)
+            if sample_seconds is not None and sample_seconds <= 0:
+                die("--sample seconds must be a positive integer", code=EXIT_USAGE)
 
     # --- URL resolution ------------------------------------------------------
     if not args.url:
-        if args.sample:
+        if sample_seconds is not None:
             args.url = DEFAULT_SAMPLE_URL
             log.info(f"[sample] no URL given, using default: {args.url}")
         else:
@@ -584,8 +600,8 @@ def main() -> None:
                 # Whisper-only fields (null for caption sources).
                 "audio_duration_seconds": result.audio_duration_seconds,
                 "whisper_estimate_seconds": result.whisper_estimate_seconds,
-                # Sample-mode metadata (null when sample mode is off).
-                "sample": bool(args.sample),
+                # Sample-mode metadata (false/null when sample mode is off).
+                "sample": sample_seconds is not None,
                 "sample_seconds": sample_seconds,
             }
             body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
