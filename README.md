@@ -11,6 +11,31 @@ available. You can also force a specific source.
 - **`auto-captions`** — YouTube's auto-generated captions only
 - **`whisper`** — skip captions, download audio, transcribe locally
 
+## Install
+
+```sh
+git clone https://github.com/plc/yt_transcript.git
+cd yt_transcript
+./install.sh
+```
+
+The installer checks for `pipx`, `yt-dlp`, `ffmpeg`, and `whisper`. If any are
+missing it prints the exact install command for your platform (brew on macOS,
+apt on Linux) and exits — install what it reports and re-run. Once all deps
+are present it installs the `yt-transcript` command into an isolated pipx venv.
+
+- `./install.sh --check` — check deps only, don't install anything
+- `./install.sh --force` — reinstall `yt-transcript` even if already present
+
+Quick one-time test without installing:
+
+```sh
+python3 yt_transcript/cli.py 'https://youtu.be/dQw4w9WgXcQ'
+```
+
+See [Requirements](#requirements) for the full dependency matrix and manual
+install commands.
+
 ## Requirements
 
 All three tools must be on your `PATH`:
@@ -30,35 +55,14 @@ transcribe. The CLI checks them lazily based on `--source`:
 - `--source auto` — needs `yt-dlp` + `ffmpeg` (whisper checked only if both caption passes fail)
 - `--source whisper` — needs all three up front
 
-## Install
+## Manual install
 
-The easy way — a bundled installer that handles dependencies and the package
-itself (idempotent, safe to re-run):
-
-```sh
-git clone https://github.com/plc/yt_transcript.git
-cd yt_transcript
-./install.sh
-```
-
-`./install.sh --check` reports what's installed without changing anything.
-`./install.sh --force` reinstalls the `yt-transcript` package even if it's
-already present. The installer uses Homebrew on macOS and apt on Linux for
-system deps (`yt-dlp`, `ffmpeg`), and pipx for Python packages
-(`openai-whisper`, `yt-transcript`).
-
-Manual install, if you prefer:
+If you'd rather not use the installer script:
 
 ```sh
-brew install yt-dlp ffmpeg     # or: apt-get install yt-dlp ffmpeg
+brew install yt-dlp ffmpeg       # or: sudo apt-get install yt-dlp ffmpeg
 pipx install openai-whisper
-pipx install .                 # from the repo root
-```
-
-Or, without installing at all, run the script directly:
-
-```sh
-python3 yt_transcript/cli.py ...
+pipx install .                   # from the repo root
 ```
 
 ## Usage
