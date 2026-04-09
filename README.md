@@ -104,6 +104,8 @@ yt-transcript URL [--source auto|uploaded|auto-captions|whisper]
 | `--format`             | `txt`     | Output format: `txt` (plain transcript) or `json` (structured, see below)   |
 | `-o`, `--output FILE`  | stdout    | Write output to FILE instead of stdout                                      |
 | `--version`            | —         | Print version and exit                                                      |
+| `--sample`             | off       | Sample mode: only process the first N seconds. Smoke-tests the full pipeline end to end. If no URL is given, a built-in default is used. |
+| `--sample-seconds N`   | `60`      | Length of the sample clip in seconds. Implies `--sample`.                   |
 | `--keep-temp`          | off       | Don't delete the working directory (for debugging)                          |
 | `-q`, `--quiet`        | —         | Silent: only errors and the final outcome line                              |
 | `-v`, `--verbose`      | —         | Verbose: stream all yt-dlp / whisper output                                 |
@@ -112,6 +114,12 @@ yt-transcript URL [--source auto|uploaded|auto-captions|whisper]
 ### Examples
 
 ```sh
+# Smoke-test the whole pipeline (first 60s only, built-in sample URL).
+yt-transcript --sample
+
+# Same, but your own URL and a longer clip.
+yt-transcript --sample --sample-seconds 90 'https://youtu.be/...'
+
 # Print version.
 yt-transcript --version
 
@@ -152,7 +160,9 @@ keep stderr clean. Shape:
   "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   "chars": 4823,
   "audio_duration_seconds": null,       // set only when source == whisper
-  "whisper_estimate_seconds": null      // set only when source == whisper
+  "whisper_estimate_seconds": null,     // set only when source == whisper
+  "sample": false,                      // true when --sample is in effect
+  "sample_seconds": null                // clip length when sample is true
 }
 ```
 
@@ -171,6 +181,30 @@ Metadata fields come from yt-dlp's `--write-info-json` sidecar; any field that
 yt-dlp didn't populate will be `null`. `source` is always the one that actually
 produced the transcript — so in `--source auto` an agent can see whether it got
 uploaded captions, auto-captions, or fell back to whisper.
+
+### Sample mode (smoke test)
+
+`--sample` truncates the run to the first N seconds of video so you can verify
+the whole pipeline end-to-end in under a minute without waiting for a full
+transcription. It works with every `--source`:
+
+- **Captions sources** — the VTT is parsed as usual, then cues starting at or
+  after `sample_seconds` are dropped in-memory. Essentially free.
+- **Whisper** — yt-dlp is called with `--download-sections "*0-N"`, so only
+  the first N seconds of audio are actually downloaded and decoded. The
+  `[whisper-estimate]` line uses the clamped duration, not the full video.
+
+If you don't provide a URL, sample mode falls back to a built-in default video
+(`https://www.youtube.com/watch?v=3m5qxZm_JqM`). So the fastest possible
+sanity check for a fresh install is:
+
+```sh
+yt-transcript --sample
+```
+
+In `--format json`, sample mode sets `"sample": true` and
+`"sample_seconds": 60` so agents can tell the transcript is clipped, not the
+whole video.
 
 ### Long videos and the whisper estimate
 

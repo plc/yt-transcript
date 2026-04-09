@@ -20,6 +20,11 @@ SOURCES = ("auto", "uploaded", "auto-captions", "whisper")
 VERBOSITIES = ("silent", "medium", "verbose")
 FORMATS = ("txt", "json")
 
+# Default video used when --sample is passed without a URL. A short, always-
+# available public video is best here; this is just a smoke-test target.
+DEFAULT_SAMPLE_URL = "https://www.youtube.com/watch?v=3m5qxZm_JqM"
+DEFAULT_SAMPLE_SECONDS = 60
+
 # Verbosity levels as ints for easy comparison.
 V_SILENT = 0
 V_MEDIUM = 1
@@ -246,21 +251,35 @@ def try_captions(
 
 
 _TIMESTAMP_RE = re.compile(r"\d{2}:\d{2}:\d{2}\.\d{3}\s*-->")
+_CUE_START_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->")
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
-def vtt_to_text(path: Path) -> str:
-    """Strip VTT markup and collapse the rolling duplicates auto-captions emit."""
+def vtt_to_text(path: Path, max_seconds: float | None = None) -> str:
+    """Strip VTT markup and collapse the rolling duplicates auto-captions emit.
+
+    If max_seconds is set, cues starting at or after that time are dropped.
+    This is used by sample mode to truncate captions to the first N seconds.
+    """
     lines_out: list[str] = []
+    current_start: float = 0.0
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
         if not line:
             continue
         if line.startswith(("WEBVTT", "Kind:", "Language:", "NOTE", "STYLE")):
             continue
+        m = _CUE_START_RE.match(line)
+        if m:
+            h, mi, s, ms = (int(x) for x in m.groups())
+            current_start = h * 3600 + mi * 60 + s + ms / 1000.0
+            continue
         if _TIMESTAMP_RE.search(line):
+            # A timestamp line that didn't match the start-of-cue anchor — drop.
             continue
         if line.isdigit():  # cue number
+            continue
+        if max_seconds is not None and current_start >= max_seconds:
             continue
         line = _TAG_RE.sub("", line)
         line = re.sub(r"\s+", " ", line).strip()
@@ -280,9 +299,14 @@ def vtt_to_text(path: Path) -> str:
 
 
 def transcribe_with_whisper(
-    url: str, tmp: Path, model: str, log: Logger
+    url: str, tmp: Path, model: str, log: Logger,
+    sample_seconds: int | None = None,
 ) -> tuple[str, float | None, dict | None]:
     """Run the whisper path. Returns (transcript_text, duration_s, estimate_dict).
+
+    If sample_seconds is set, only the first N seconds of audio are downloaded
+    (via yt-dlp --download-sections) and the estimate reflects that shorter
+    clip — not the full video length.
 
     Before downloading audio, this function probes the video's duration and
     prints a prominent estimate line to stderr so users (and agents scraping
@@ -294,15 +318,23 @@ def transcribe_with_whisper(
     # --- Duration probe + estimate (shown BEFORE the slow work starts) -------
     # Reuse metadata from a prior yt-dlp call (e.g. captions attempts in auto
     # mode) if available — saves a roundtrip. Otherwise probe explicitly.
-    duration_s: float | None = None
+    full_duration_s: float | None = None
     info = _read_info_json(tmp)
     if info.get("duration") is not None:
         try:
-            duration_s = float(info["duration"])
+            full_duration_s = float(info["duration"])
         except (TypeError, ValueError):
-            duration_s = None
-    if duration_s is None:
-        duration_s = probe_duration(url, log)
+            full_duration_s = None
+    if full_duration_s is None:
+        full_duration_s = probe_duration(url, log)
+
+    # Effective duration whisper will actually process (clamped in sample mode).
+    if sample_seconds is not None and full_duration_s is not None:
+        duration_s: float | None = min(full_duration_s, float(sample_seconds))
+    elif sample_seconds is not None:
+        duration_s = float(sample_seconds)
+    else:
+        duration_s = full_duration_s
 
     estimate = _estimate_whisper_seconds(duration_s, model) if duration_s else None
 
@@ -333,10 +365,17 @@ def transcribe_with_whisper(
         )
 
     # --- Audio download ------------------------------------------------------
-    log.info("[yt-dlp] downloading audio ...")
+    if sample_seconds is not None:
+        log.info(f"[yt-dlp] downloading first {sample_seconds}s of audio (sample mode) ...")
+    else:
+        log.info("[yt-dlp] downloading audio ...")
     dl_cmd = ["yt-dlp", "-f", "bestaudio", "-x", "--audio-format", "mp3",
               "--write-info-json",
               "-o", str(tmp / "%(id)s.%(ext)s"), url]
+    if sample_seconds is not None:
+        # yt-dlp clips to [start-end] via ffmpeg under the hood; we already
+        # require ffmpeg for the whisper path so this is always available.
+        dl_cmd += ["--download-sections", f"*0-{int(sample_seconds)}"]
     if log.level < V_VERBOSE:
         dl_cmd += ["--quiet", "--no-warnings"]
     dl = run(dl_cmd, log)
@@ -387,7 +426,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Turn a YouTube video into a clean text transcript.",
     )
     p.add_argument("--version", action="version", version=f"yt-transcript {__version__}")
-    p.add_argument("url", help="YouTube video URL")
+    p.add_argument("url", nargs="?", default=None,
+                   help="YouTube video URL. Optional when --sample is used "
+                        f"(defaults to {DEFAULT_SAMPLE_URL} in that case).")
+    p.add_argument("--sample", action="store_true",
+                   help=f"sample mode: only process the first N seconds "
+                        f"(default {DEFAULT_SAMPLE_SECONDS}, see --sample-seconds). "
+                        "Useful for smoke-testing the CLI end to end. "
+                        "If no URL is given, a built-in sample URL is used.")
+    p.add_argument("--sample-seconds", type=int, default=None, metavar="N",
+                   help=f"length of the sample in seconds (default: {DEFAULT_SAMPLE_SECONDS}). "
+                        "Implies --sample.")
     p.add_argument("--source", choices=SOURCES, default="auto",
                    help="transcript source (default: auto — uploaded → auto-captions → whisper)")
     p.add_argument("--lang", default="en", help="caption language code (default: en)")
@@ -409,9 +458,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_transcript(
-    url: str, source: str, lang: str, model: str, tmp: Path, log: Logger
+    url: str, source: str, lang: str, model: str, tmp: Path, log: Logger,
+    sample_seconds: int | None = None,
 ) -> Result:
-    """Run the pipeline and return a populated Result."""
+    """Run the pipeline and return a populated Result.
+
+    If sample_seconds is set, captions are truncated to cues starting before
+    that time, and whisper processes only the first sample_seconds of audio.
+    """
+
+    def _caption_text(vtt: Path) -> str:
+        return vtt_to_text(vtt, max_seconds=float(sample_seconds) if sample_seconds else None)
 
     def _result(text: str, actual_source: str, *, used_lang: str | None = None,
                 used_model: str | None = None,
@@ -435,7 +492,7 @@ def resolve_transcript(
             die(f"no uploaded captions found for lang={lang!r}. "
                 "Try --source auto-captions, --source whisper, or a different --lang.",
                 code=EXIT_NO_CAPTIONS)
-        return _result(vtt_to_text(vtt), "uploaded", used_lang=lang)
+        return _result(_caption_text(vtt), "uploaded", used_lang=lang)
 
     if source == "auto-captions":
         log.info("[captions] fetching auto-generated captions ...")
@@ -444,10 +501,12 @@ def resolve_transcript(
             die(f"no auto-generated captions found for lang={lang!r}. "
                 "Try --source whisper or a different --lang.",
                 code=EXIT_NO_CAPTIONS)
-        return _result(vtt_to_text(vtt), "auto-captions", used_lang=lang)
+        return _result(_caption_text(vtt), "auto-captions", used_lang=lang)
 
     if source == "whisper":
-        text, dur, est = transcribe_with_whisper(url, tmp, model, log)
+        text, dur, est = transcribe_with_whisper(
+            url, tmp, model, log, sample_seconds=sample_seconds,
+        )
         return _result(text, "whisper", used_model=model,
                        audio_duration_seconds=dur, whisper_estimate_seconds=est)
 
@@ -455,17 +514,19 @@ def resolve_transcript(
     log.info("[auto] trying uploaded captions ...")
     vtt = try_captions(url, tmp, lang, log, uploaded=True, auto=False)
     if vtt:
-        return _result(vtt_to_text(vtt), "uploaded", used_lang=lang)
+        return _result(_caption_text(vtt), "uploaded", used_lang=lang)  # auto-fallback hit uploaded
     for f in glob.glob(str(tmp / "*.vtt")):
         os.remove(f)
 
     log.info("[auto] trying auto-generated captions ...")
     vtt = try_captions(url, tmp, lang, log, uploaded=False, auto=True)
     if vtt:
-        return _result(vtt_to_text(vtt), "auto-captions", used_lang=lang)
+        return _result(_caption_text(vtt), "auto-captions", used_lang=lang)
 
     log.info("[auto] no captions; falling back to whisper ...")
-    text, dur, est = transcribe_with_whisper(url, tmp, model, log)
+    text, dur, est = transcribe_with_whisper(
+        url, tmp, model, log, sample_seconds=sample_seconds,
+    )
     return _result(text, "whisper", used_model=model,
                    audio_duration_seconds=dur, whisper_estimate_seconds=est)
 
@@ -473,13 +534,39 @@ def resolve_transcript(
 def main() -> None:
     args = build_parser().parse_args()
     log = Logger(_V_MAP[args.verbosity])
+
+    # --- sample mode resolution ---------------------------------------------
+    # --sample-seconds implies --sample.
+    if args.sample_seconds is not None:
+        args.sample = True
+    sample_seconds: int | None = None
+    if args.sample:
+        sample_seconds = args.sample_seconds if args.sample_seconds is not None \
+            else DEFAULT_SAMPLE_SECONDS
+        if sample_seconds <= 0:
+            die("--sample-seconds must be a positive integer", code=EXIT_USAGE)
+
+    # --- URL resolution ------------------------------------------------------
+    if not args.url:
+        if args.sample:
+            args.url = DEFAULT_SAMPLE_URL
+            log.info(f"[sample] no URL given, using default: {args.url}")
+        else:
+            die("missing URL. Pass a YouTube URL, or use --sample to smoke-test "
+                f"with the built-in default ({DEFAULT_SAMPLE_URL}).",
+                code=EXIT_USAGE)
+
     validate_url(args.url)
     preflight(args.source)
+
+    if sample_seconds is not None:
+        log.info(f"[sample] truncating to first {sample_seconds}s")
 
     tmp = Path(tempfile.mkdtemp(prefix="yt-transcript-"))
     try:
         result = resolve_transcript(
-            args.url, args.source, args.lang, args.model, tmp, log
+            args.url, args.source, args.lang, args.model, tmp, log,
+            sample_seconds=sample_seconds,
         )
 
         if args.format == "json":
@@ -497,6 +584,9 @@ def main() -> None:
                 # Whisper-only fields (null for caption sources).
                 "audio_duration_seconds": result.audio_duration_seconds,
                 "whisper_estimate_seconds": result.whisper_estimate_seconds,
+                # Sample-mode metadata (null when sample mode is off).
+                "sample": bool(args.sample),
+                "sample_seconds": sample_seconds,
             }
             body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         else:

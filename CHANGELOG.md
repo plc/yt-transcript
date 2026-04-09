@@ -10,6 +10,27 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.7.0 — 2026-04-09
+- feat: `--sample` and `--sample-seconds N` (default 60) — smoke-test mode that
+  processes only the first N seconds of the video end-to-end. Works with
+  every `--source`:
+  - captions: cues starting at or after N seconds are dropped in-memory.
+  - whisper: yt-dlp is invoked with `--download-sections "*0-N"` so only the
+    first N seconds of audio are downloaded and decoded; the
+    `[whisper-estimate]` line reflects the clamped duration.
+- feat: `--sample` without a URL falls back to a built-in default video
+  (`https://www.youtube.com/watch?v=3m5qxZm_JqM`). The fastest sanity check
+  for a fresh install is now `yt-transcript --sample`.
+- feat: JSON output gains `"sample": bool` and `"sample_seconds": int|null`
+  so agents can distinguish a clipped transcript from a full one.
+- feat: URL positional argument is now optional (required unless `--sample`).
+  Missing URL without `--sample` exits 2 with a clear hint.
+- internal: `vtt_to_text()` accepts an optional `max_seconds` and parses cue
+  start timestamps so captions can be truncated precisely. Used by sample
+  mode, but available for any caller.
+- docs: README gains a "Sample mode" section, a flags-table entry, and an
+  example in the Examples block.
+
 ## 0.6.0 — 2026-04-09
 - feat: whisper runtime estimate. Before whisper starts, probe the video's
   duration via `yt-dlp --print` (reusing an existing info.json if one is
