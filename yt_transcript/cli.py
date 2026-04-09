@@ -21,6 +21,16 @@ V_MEDIUM = 1
 V_VERBOSE = 2
 _V_MAP = {"silent": V_SILENT, "medium": V_MEDIUM, "verbose": V_VERBOSE}
 
+# Exit codes
+EXIT_OK = 0
+EXIT_USAGE = 2        # invalid arguments / bad URL
+EXIT_MISSING_DEP = 3  # required binary not on PATH
+EXIT_DOWNLOAD = 4     # yt-dlp failure (network, private video, etc.)
+EXIT_NO_CAPTIONS = 5  # requested caption source yielded nothing
+EXIT_WHISPER = 6      # whisper failed to transcribe
+EXIT_IO = 7           # output file write failed
+EXIT_INTERRUPT = 130  # Ctrl-C
+
 
 def die(msg: str, code: int = 1) -> None:
     print(f"error: {msg}", file=sys.stderr)
@@ -29,13 +39,45 @@ def die(msg: str, code: int = 1) -> None:
 
 def require(tool: str, hint: str) -> None:
     if not shutil.which(tool):
-        die(f"missing required dependency: {tool} ({hint})")
+        die(f"missing required dependency: {tool!r} not found on PATH.\n"
+            f"       {hint}", code=EXIT_MISSING_DEP)
 
 
 def preflight(source: str) -> None:
     require("yt-dlp", "install: `brew install yt-dlp` or `pipx install yt-dlp`")
+    # ffmpeg is used by yt-dlp for audio extraction and by whisper for decoding.
+    # Only strictly needed when we'll be transcribing, but auto may fall through
+    # to whisper, so we check it up front for anything except pure-captions modes.
+    if source in ("auto", "whisper"):
+        require("ffmpeg",
+                "install: `brew install ffmpeg` (required for audio extraction and whisper)")
     if source == "whisper":
         require("whisper", "install: `pipx install openai-whisper`")
+
+
+_URL_RE = re.compile(
+    r"^https?://("
+    r"(?:www\.|m\.|music\.)?youtube\.com/"
+    r"|youtu\.be/"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def validate_url(url: str) -> None:
+    """Reject obviously bad input before handing it to yt-dlp."""
+    if not url or not url.strip():
+        die("URL is empty", code=EXIT_USAGE)
+    u = url.strip()
+    if "\\?" in u or "\\=" in u:
+        die("URL contains backslash-escaped characters (\\? or \\=). "
+            "Your shell likely mangled the paste. "
+            "Wrap the URL in single quotes, or use the short form https://youtu.be/<ID>.",
+            code=EXIT_USAGE)
+    if not _URL_RE.match(u):
+        die(f"not a recognized YouTube URL: {u!r}\n"
+            f"       expected https://www.youtube.com/watch?v=<ID> or https://youtu.be/<ID>",
+            code=EXIT_USAGE)
 
 
 class Logger:
@@ -144,13 +186,16 @@ def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str
     if dl.returncode != 0:
         if log.level < V_VERBOSE and dl.stdout:
             print(_tail(dl.stdout), file=sys.stderr)
-        die("yt-dlp failed to download audio")
+        die("yt-dlp failed to download audio. "
+            "Common causes: invalid URL, private/age-restricted video, region block, "
+            "or an outdated yt-dlp (try `brew upgrade yt-dlp`).",
+            code=EXIT_DOWNLOAD)
     mp3s = sorted(glob.glob(str(tmp / "*.mp3")))
     if not mp3s:
-        die("no audio file produced by yt-dlp")
+        die("yt-dlp ran but produced no audio file", code=EXIT_DOWNLOAD)
     audio = mp3s[0]
 
-    log.info(f"[whisper] transcribing with model={model} ...")
+    log.info(f"[whisper] transcribing with model={model} ... (this may take a while)")
     wh_cmd = ["whisper", audio, "--model", model, "--output_format", "txt",
               "--output_dir", str(tmp)]
     if log.level < V_VERBOSE:
@@ -160,10 +205,12 @@ def transcribe_with_whisper(url: str, tmp: Path, model: str, log: Logger) -> str
     if wh.returncode != 0:
         if log.level < V_VERBOSE and wh.stdout:
             print(_tail(wh.stdout), file=sys.stderr)
-        die("whisper failed")
+        die(f"whisper failed to transcribe (model={model}). "
+            "If this is a model-name error, try one of: tiny, base, small, medium, large.",
+            code=EXIT_WHISPER)
     txts = sorted(glob.glob(str(tmp / "*.txt")))
     if not txts:
-        die("whisper produced no .txt output")
+        die("whisper ran but produced no .txt output", code=EXIT_WHISPER)
     return Path(txts[0]).read_text(encoding="utf-8", errors="replace")
 
 
@@ -197,14 +244,18 @@ def resolve_transcript(
         log.info("[captions] fetching uploaded captions ...")
         vtt = try_captions(url, tmp, lang, log, uploaded=True, auto=False)
         if not vtt:
-            die("no uploaded captions found")
+            die(f"no uploaded captions found for lang={lang!r}. "
+                "Try --source auto-captions, --source whisper, or a different --lang.",
+                code=EXIT_NO_CAPTIONS)
         return vtt_to_text(vtt)
 
     if source == "auto-captions":
         log.info("[captions] fetching auto-generated captions ...")
         vtt = try_captions(url, tmp, lang, log, uploaded=False, auto=True)
         if not vtt:
-            die("no auto-generated captions found")
+            die(f"no auto-generated captions found for lang={lang!r}. "
+                "Try --source whisper or a different --lang.",
+                code=EXIT_NO_CAPTIONS)
         return vtt_to_text(vtt)
 
     if source == "whisper":
@@ -230,6 +281,7 @@ def resolve_transcript(
 def main() -> None:
     args = build_parser().parse_args()
     log = Logger(_V_MAP[args.verbosity])
+    validate_url(args.url)
     preflight(args.source)
 
     tmp = Path(tempfile.mkdtemp(prefix="yt-transcript-"))
@@ -238,13 +290,19 @@ def main() -> None:
             args.url, args.source, args.lang, args.model, tmp, log
         )
         if args.output:
-            Path(args.output).write_text(transcript, encoding="utf-8")
+            try:
+                Path(args.output).write_text(transcript, encoding="utf-8")
+            except OSError as e:
+                die(f"could not write output file {args.output!r}: {e}", code=EXIT_IO)
             # Outcome line: shown at every level (including silent).
             print(f"wrote {args.output} ({len(transcript)} chars)", file=sys.stderr)
         else:
             sys.stdout.write(transcript)
         if args.keep_temp:
             print(f"[keep-temp] {tmp}", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        sys.exit(EXIT_INTERRUPT)
     finally:
         if not args.keep_temp:
             shutil.rmtree(tmp, ignore_errors=True)

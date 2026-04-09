@@ -10,6 +10,26 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.3.0 — 2026-04-09
+- feat: up-front URL validation. Rejects empty input, non-YouTube domains, and
+  backslash-mangled URLs (common zsh `url-quote-magic` mishap) with specific
+  messages before spawning yt-dlp. Exit code 2.
+- feat: `ffmpeg` added to preflight for `auto` and `whisper` sources (checked
+  lazily — captions-only modes still don't need it). Exit code 3 for any
+  missing dependency, with an install hint.
+- feat: structured exit codes — `0` ok, `2` usage, `3` missing dep, `4` yt-dlp
+  download failure, `5` no captions found, `6` whisper failure, `7` output I/O
+  error, `130` Ctrl-C. Documented in README.
+- feat: specific, actionable error messages for download failures (lists likely
+  causes: private video, region block, stale yt-dlp), caption misses (suggests
+  alternative sources), whisper failures (reminds of valid model names), and
+  output write failures (surfaces the OSError).
+- feat: graceful `KeyboardInterrupt` handling — prints `interrupted` and exits
+  `130` instead of dumping a traceback.
+- docs: comprehensive README rewrite with a flags table, examples per mode,
+  verbosity level explanations, exit code table, and troubleshooting section
+  covering the zsh paste issue, stale yt-dlp, missing captions, and slow whisper.
+
 ## 0.2.0 — 2026-04-08
 - feat: `--verbosity {silent,medium,verbose}` (default `medium`) plus `-q`/`-v`
   shortcuts. Medium shows only our step markers; silent suppresses everything
