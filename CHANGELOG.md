@@ -10,7 +10,7 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
-## Unreleased
+## 0.2.0 — 2026-04-08
 - feat: `--verbosity {silent,medium,verbose}` (default `medium`) plus `-q`/`-v`
   shortcuts. Medium shows only our step markers; silent suppresses everything
   except errors and the final outcome line; verbose streams yt-dlp and whisper
