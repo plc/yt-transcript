@@ -20,14 +20,17 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
-def preflight() -> None:
-    missing = []
-    if not shutil.which("yt-dlp"):
-        missing.append("yt-dlp (install: `brew install yt-dlp` or `pipx install yt-dlp`)")
-    if not shutil.which("whisper"):
-        missing.append("whisper (install: `pipx install openai-whisper`)")
-    if missing:
-        die("missing required dependencies:\n  - " + "\n  - ".join(missing))
+def require(tool: str, hint: str) -> None:
+    if not shutil.which(tool):
+        die(f"missing required dependency: {tool} ({hint})")
+
+
+def preflight(source: str) -> None:
+    require("yt-dlp", "install: `brew install yt-dlp` or `pipx install yt-dlp`")
+    # whisper is only strictly required for `whisper` source; for `auto` it's
+    # a fallback and we check lazily if captions aren't found.
+    if source == "whisper":
+        require("whisper", "install: `pipx install openai-whisper`")
 
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -87,6 +90,7 @@ def vtt_to_text(path: Path) -> str:
 
 
 def transcribe_with_whisper(url: str, tmp: Path, model: str) -> str:
+    require("whisper", "install: `pipx install openai-whisper`")
     dl = run(["yt-dlp", "-f", "bestaudio", "-x", "--audio-format", "mp3",
               "-o", str(tmp / "%(id)s.%(ext)s"), url])
     if dl.returncode != 0:
@@ -157,7 +161,7 @@ def resolve_transcript(url: str, source: str, lang: str, model: str, tmp: Path) 
 
 def main() -> None:
     args = build_parser().parse_args()
-    preflight()
+    preflight(args.source)
 
     tmp = Path(tempfile.mkdtemp(prefix="yt-transcript-"))
     try:
