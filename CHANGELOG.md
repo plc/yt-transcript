@@ -10,6 +10,15 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.5.1 — 2026-04-09
+- change: `install.sh` no longer installs system dependencies. It checks for
+  `pipx`, `yt-dlp`, `ffmpeg`, and `whisper`; if any are missing it prints the
+  exact install command (platform-aware — brew on macOS, apt on Linux) and
+  exits 3. The user installs what's missing and re-runs. The script still
+  installs the `yt-transcript` package itself via pipx once all deps are
+  present. `--check` / `--force` flags preserved.
+- fix: `install.sh --help` no longer leaks the `set -euo pipefail` line.
+
 ## 0.5.0 — 2026-04-09
 - feat: `install.sh` bundled installer. Idempotent, detects macOS vs Linux,
   uses Homebrew or apt for `yt-dlp`/`ffmpeg`, pipx for `openai-whisper` and the
