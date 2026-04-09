@@ -10,6 +10,14 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.5.2 — 2026-04-09
+- feat: `install.sh` detects when it's being piped through curl (no local
+  `pyproject.toml` next to it) and installs from the git URL instead of a
+  local path. Enables one-shot install:
+  `curl -fsSL https://raw.githubusercontent.com/plc/yt_transcript/main/install.sh | bash`
+- docs: README shows three install paths — direct `pipx install git+...`,
+  `curl | bash`, and local clone + `./install.sh`.
+
 ## 0.5.1 — 2026-04-09
 - change: `install.sh` no longer installs system dependencies. It checks for
   `pipx`, `yt-dlp`, `ffmpeg`, and `whisper`; if any are missing it prints the

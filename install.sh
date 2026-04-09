@@ -15,22 +15,46 @@
 #   - whisper  (local transcription fallback; openai-whisper)
 #
 # Usage:
-#   ./install.sh            # check deps, then install yt-transcript
+#   ./install.sh            # from a local clone — check deps, install yt-transcript
 #   ./install.sh --check    # only check deps, do not install anything
 #   ./install.sh --force    # reinstall yt-transcript even if already present
+#
+# Or one-shot from the internet:
+#   curl -fsSL https://raw.githubusercontent.com/plc/yt_transcript/main/install.sh | bash
+#
+# When piped through curl, the script installs from the git URL directly (no
+# clone needed).
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GIT_URL="https://github.com/plc/yt_transcript.git"
+
+# Detect whether we're running from a local checkout or piped through curl.
+# When piped, BASH_SOURCE is typically empty/stdin and there's no pyproject.toml
+# to build from — we fall back to installing directly from the git URL.
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/pyproject.toml" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  INSTALL_TARGET="$SCRIPT_DIR"
+  MODE="local"
+else
+  SCRIPT_DIR=""
+  INSTALL_TARGET="git+$GIT_URL"
+  MODE="remote"
+fi
 
 CHECK_ONLY=0
 FORCE=0
-for arg in "$@"; do
+for arg in "${@:-}"; do
   case "$arg" in
+    "") ;;
     --check) CHECK_ONLY=1 ;;
     --force) FORCE=1 ;;
     -h|--help)
-      awk '/^#!/ {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
+      if [ "$MODE" = local ] && [ -f "$0" ]; then
+        awk '/^#!/ {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
+      else
+        echo "yt-transcript installer — see https://github.com/plc/yt_transcript"
+      fi
       exit 0
       ;;
     *)
@@ -133,11 +157,15 @@ if have yt-transcript && [ "$FORCE" != 1 ]; then
   ok "yt-transcript already installed ($(yt-transcript --version 2>/dev/null || echo unknown))"
   info "pass --force to reinstall"
 else
-  info "installing yt-transcript from $SCRIPT_DIR"
-  if [ "$FORCE" = 1 ] && have yt-transcript; then
-    pipx install --force "$SCRIPT_DIR"
+  if [ "$MODE" = local ]; then
+    info "installing yt-transcript from $SCRIPT_DIR"
   else
-    pipx install "$SCRIPT_DIR"
+    info "installing yt-transcript from $GIT_URL"
+  fi
+  if [ "$FORCE" = 1 ] && have yt-transcript; then
+    pipx install --force "$INSTALL_TARGET"
+  else
+    pipx install "$INSTALL_TARGET"
   fi
   ok "yt-transcript installed ($(yt-transcript --version 2>/dev/null || echo '?'))"
 fi
