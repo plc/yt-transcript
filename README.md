@@ -32,15 +32,30 @@ transcribe. The CLI checks them lazily based on `--source`:
 
 ## Install
 
+The easy way — a bundled installer that handles dependencies and the package
+itself (idempotent, safe to re-run):
+
 ```sh
 git clone https://github.com/plc/yt_transcript.git
 cd yt_transcript
-pipx install .
+./install.sh
 ```
 
-Now you have a `yt-transcript` command on your PATH.
+`./install.sh --check` reports what's installed without changing anything.
+`./install.sh --force` reinstalls the `yt-transcript` package even if it's
+already present. The installer uses Homebrew on macOS and apt on Linux for
+system deps (`yt-dlp`, `ffmpeg`), and pipx for Python packages
+(`openai-whisper`, `yt-transcript`).
 
-Or, without installing, run the script directly:
+Manual install, if you prefer:
+
+```sh
+brew install yt-dlp ffmpeg     # or: apt-get install yt-dlp ffmpeg
+pipx install openai-whisper
+pipx install .                 # from the repo root
+```
+
+Or, without installing at all, run the script directly:
 
 ```sh
 python3 yt_transcript/cli.py ...

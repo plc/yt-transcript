@@ -10,6 +10,13 @@
   caption-only runs succeed on machines without whisper installed.
 - Decision: auto-captions are deduplicated with a prefix-collapse pass to handle YouTube's rolling cues.
 
+## 0.5.0 — 2026-04-09
+- feat: `install.sh` bundled installer. Idempotent, detects macOS vs Linux,
+  uses Homebrew or apt for `yt-dlp`/`ffmpeg`, pipx for `openai-whisper` and the
+  `yt-transcript` package itself. Supports `--check` (report only, no install)
+  and `--force` (reinstall yt-transcript). Tries to auto-install pipx if missing.
+- docs: README install section documents both the scripted and manual paths.
+
 ## 0.4.0 — 2026-04-09
 - feat: `--version` flag.
 - feat: `--format {txt,json}` (default `txt`). JSON mode emits a single object
